@@ -1,0 +1,149 @@
+---
+title: "Analysis of Movement Data to Predict Type of Action Taken"
+author: "M.L. Humphrey"
+date: "May 21, 2016"
+output: html_document
+---
+
+#Synopsis
+Using the data provided for the Coursera Machine Learning course, we took an ensemble approach to create a model that would predict the type of activiy an individual was engaged in based upon a series of measurements from a device that measures personal activity.
+
+We split the data into a training and test set and then applied three models to the data.
+
+While a random forest approach was essentially good enough, we combined the random forest with gbm and lda to form one combined model.  Lda was not a good model fit, but when combined with the other two did help to create a better model overall.  Cross-validation was built into the modeling for both the random forest and gbm models.
+
+When we applied the final model to the testing set we'd created we had a 99.76% accuracy which means we estimate the error rate to be only .24%.  The below is a full discussion of the data transformation and models. 
+
+#Data Processing
+We saved the provided training data into a local directory and then read into R.
+
+```{r cache=TRUE}
+data<-read.csv("./pml-training.csv")
+```
+
+We viewed the data using the head, dim, str, and summary functions.  From this we noted that there were a number of fields with NA values.
+
+Next we converted these to zeroes to allow better manipulation of the data.
+```{r cache=TRUE}
+data[is.na(data)] <-0
+```
+
+
+##Creation of First Test and Training Set
+The testing file provided is only a small handful of observations, so we chose to treat it as a validation set instead.  We took the original training set data and partitioned it into a training set (60%) and a test set (40%) using the caret package.
+```{r cache=TRUE,message=FALSE}
+library(caret)
+inTrain<-createDataPartition(y=data$classe,p=0.6,list=FALSE)
+training<-data[inTrain,]
+testing<-data[-inTrain,]
+```
+
+
+##Further Data Processing
+Now that we had our training set, we removed those variables that had little or no variance so would not inform the model.  We waited to do this until this point in case the results would've been different using the full data set.
+
+```{r cache=TRUE}
+nsv<-nearZeroVar(training,saveMetrics=TRUE)
+remove<-nsv$nzv==TRUE
+trainingrev<-training[!remove]
+```
+
+We also removed the time stamp data and observation number columns since those should not have an impact.  If activity A was performed before activity B, that shouldn't change the result. (Unless there was a flaw in the creation of the study and everyone did every activity in the same order, but we chose to exclude for this analysis.)
+
+```{r cache=TRUE}
+trainingrev2<-subset(trainingrev, select=-c(X,raw_timestamp_part_1,raw_timestamp_part_2,cvtd_timestamp))
+```
+
+We then took the testing data set and removed the same columns as had been removed from the training set. Not sure this step was necessary since the training set wasn't going to be modeled on the removed columns, but it seemed best to do so.
+```{r cache=TRUE}
+testingrev<-testing[!remove]
+testingrev2<-subset(testingrev, select=-c(X,raw_timestamp_part_1,raw_timestamp_part_2,cvtd_timestamp))
+```
+
+
+##First Model
+The first model we ran against the data was a random forest model.  While a time consuming model to build it is highly accurate.  We had caret center and scale the data as well as impute any missing values for the remaining factors.  We limited the analysis to three cross-validations.
+
+```{r cache=TRUE,message=FALSE}
+mod1<-train(classe~.,method="rf",data=trainingrev2,verbose=FALSE,trControl=trainControl(method="cv",number=3),preProcess=c("center","scale","knnImpute"))
+```
+
+We then applied this model to the testing data and looked at the results.
+```{r cache=TRUE}
+pred1T<-predict(mod1,testingrev2)
+library(caret)
+confusionMatrix(testingrev2$classe,pred1T)
+```
+
+As you can see, the model was highly accurate with only 20 incorrect values when applied to the testing set, which is only .25% error.
+
+##Second Model
+The second model we ran against the data was a boosting with trees model (gbm).  It too was fairly time intensive, but also highly accurate.  As with the other model we had caret center and scale any data, impute missing values, and limit to three cross-validations.
+```{r cache=TRUE,message=FALSE}
+mod2<-train(classe~.,method="gbm",data=trainingrev2,verbose=FALSE,trControl=trainControl(method="cv",number=3),preProcess=c("center","scale","knnImpute"))
+```
+
+We then applied this model to the testing data and looked at the results.
+```{r cache=TRUE}
+pred2T<-predict(mod2,testingrev2)
+confusionMatrix(testingrev2$classe,pred2T)
+```
+
+This model was also very accurate although not as accurate as the first model with 84 incorrect values, or approximately 1% incorrect when applied to the testing set.
+
+##Plot of Outcome of First Two Models
+We can look at the outcome of the first two models via a plot and see that for the most part they both get the same correct answer as evidenced by the large dot at the intersection of each possible outcome and as colored for that outcome.
+```{r cache=TRUE}
+library(ggplot2)
+d<-qplot(pred1T,pred2T,colour=classe,data=testingrev2,facets=.~classe,main="Convergence of First Two Models with Actual Values For Testing Set",xlab="Random Forest Model",ylab="GBM Model")
+d+geom_count()
+```
+
+
+##Third Model
+We wanted to add a third model as a tie-breaker model, so chose a model that was different and computationally fast .  As with the other models we had caret center and scale any data, impute missing values, and limit to three cross-validations.
+```{r cache=TRUE,message=FALSE}
+mod3<-train(classe~.,method="lda",data=trainingrev2,verbose=FALSE,trControl=trainControl(method="cv",number=3),preProcess=c("center","scale","knnImpute"))
+```
+
+We then applied this model to the testing data and looked at the results.
+```{r cache=TRUE}
+pred3T<-predict(mod3,testingrev2)
+confusionMatrix(testingrev2$classe,pred3T)
+```
+
+As you can see this model is only 75% accurate when applied to the testing data, but we believed it would give a slight advantage over the rf model when taken alone.
+
+##Combine the Models
+Next we combined the three models to get a slightly more accurate final model.  We used random forest as the method for combining the models since there are six distinct potential outcomes and a few of the other models we tried to apply generated errors.
+```{r cache=TRUE,message=FALSE}
+library(caret)
+predDF<-data.frame(pred1T,pred2T,pred3T,classe=testing$classe)
+combModFit<-train(classe~.,method="rf",data=predDF)
+combPred<-predict(combModFit,predDF)
+confusionMatrix(testingrev2$classe,combPred)
+```
+
+##Combined Model Result
+A look at a plot of the final model shows pretty consistent results which are confirmed by the .24% error rate.
+```{r cache=TRUE}
+library(ggplot2)
+e<-qplot(combPred,classe,data=testingrev2,main="Plot of Combined Model Versus Actual Values For Testing Set",xlab="Combined Model",ylab="Actual Values")
+e+geom_count()
+
+```
+
+##Prediction of Values Using Provided Test Set
+Finally, we applied the new combined model to the test set provided in the download.
+```{r cache=TRUE}
+dataval<-read.csv("./pml-testing.csv")
+dataval[is.na(dataval)] <-0
+datavalrev<-dataval[!remove]
+datavalrev2<-subset(datavalrev, select=-c(X,raw_timestamp_part_1,raw_timestamp_part_2,cvtd_timestamp))
+pred1V<-predict(mod1,datavalrev2)
+pred2V<-predict(mod2,datavalrev2)
+pred3V<-predict(mod3,datavalrev2)
+predDF<-data.frame(pred1T=pred1V,pred2T=pred2V,pred3T=pred3V)
+finalPred<-predict(combModFit,predDF)
+finalPred
+```
